@@ -1,0 +1,92 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "soulseek",
+  "title": "Soulseek",
+  "description": "Search and download music from Soulseek via slskd",
+  "icon": "extension-icon.png",
+  "author": "chmura",
+  "categories": ["Music"],
+  "license": "MIT",
+  "commands": [
+    {
+      "name": "search",
+      "title": "Search Soulseek",
+      "description": "Search for music on Soulseek and download files",
+      "mode": "view"
+    },
+    {
+      "name": "downloads",
+      "title": "View Downloads",
+      "description": "View active and completed Soulseek transfers",
+      "mode": "view"
+    },
+    {
+      "name": "setup",
+      "title": "Setup Soulseek",
+      "description": "Install and configure the slskd backend",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "slskdUrl",
+      "title": "slskd URL",
+      "description": "URL of your slskd instance",
+      "type": "textfield",
+      "default": "http://127.0.0.1:5030",
+      "required": false
+    },
+    {
+      "name": "apiKey",
+      "title": "API Key",
+      "description": "slskd API key (auto-set by the Setup command — only change this if you configured slskd manually)",
+      "type": "password",
+      "required": false
+    },
+    {
+      "name": "formatPreference",
+      "title": "Format Preference",
+      "description": "Preferred audio formats in order, comma-separated. Results are sorted so earlier formats appear first.",
+      "type": "textfield",
+      "default": "FLAC, MP3, AAC, OGG, M4A, WMA",
+      "required": false
+    },
+    {
+      "name": "bestQuality",
+      "title": "Best Quality Mode",
+      "description": "Prioritize lossless formats (FLAC, WAV) and highest-bitrate files first, overriding Format Preference",
+      "type": "checkbox",
+      "default": false,
+      "label": "Always prefer best quality",
+      "required": false
+    },
+    {
+      "name": "excludeFlac",
+      "title": "Exclude Lossless",
+      "description": "Skip FLAC, WAV, and other lossless files — useful if you only want small lossy files",
+      "type": "checkbox",
+      "default": false,
+      "label": "Exclude lossless formats",
+      "required": false
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^1.80.0",
+    "@raycast/utils": "^1.17.0"
+  },
+  "devDependencies": {
+    "@raycast/eslint-config": "^1.0.8",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.4.5"
+  },
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "fix-lint": "ray lint --fix",
+    "lint": "ray lint",
+    "publish": "npx @raycast/api@latest publish"
+  }
+}
