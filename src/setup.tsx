@@ -46,7 +46,7 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
 
   // Pre-check: if something is already on port 5030, don't try to install
   try {
-    const probe = await fetch("http://localhost:5030/api/v0/application");
+    const probe = await fetch("http://127.0.0.1:5030/api/v0/application");
     if (probe.status === 401) {
       throw new Error(
         "slskd is already running on port 5030 but your API key doesn't match.\n\nClose this installer and use the 'Enter API Key' option instead.",
@@ -73,7 +73,7 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
   const zipUrl = `https://github.com/slskd/slskd/releases/download/${version}/slskd-${version}-osx-${arch}.zip`;
   const zipPath = join("/tmp", `slskd-${version}-osx-${arch}.zip`);
   onStep("⏳ Downloading slskd (~100 MB, this may take a minute)…");
-  await execAsync(`curl -sL ${JSON.stringify(zipUrl)} -o ${JSON.stringify(zipPath)}`);
+  await execAsync(`curl -fsSL ${JSON.stringify(zipUrl)} -o ${JSON.stringify(zipPath)}`);
   onStep("✓ Download complete");
 
   // Step 4: extract
@@ -149,7 +149,12 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
   await execAsync(`launchctl load -w ${JSON.stringify(plistFile)}`);
   onStep("✓ Auto-start configured (slskd will run on every login)");
 
-  // Step 9: wait for slskd to be ready
+  // Step 9: save credentials BEFORE the readiness check, so checkConnection()
+  // authenticates with the key we just wrote into slskd.yml (otherwise the
+  // check uses an empty key, slskd returns 401, and install wrongly fails).
+  await saveConnectionSettings("http://127.0.0.1:5030", apiKey);
+
+  // Step 10: wait for slskd to be ready
   onStep("⏳ Waiting for slskd to start…");
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -158,12 +163,9 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
     if (up) break;
   }
   const up = await checkConnection();
-  if (!up) throw new Error("slskd started but isn't responding on http://localhost:5030. Check ~/.config/slskd/slskd.error.log for details.");
+  if (!up) throw new Error("slskd started but isn't responding on http://127.0.0.1:5030. Check ~/.config/slskd/slskd.error.log for details.");
 
   onStep("✓ slskd is running");
-
-  // Step 10: save credentials
-  await saveConnectionSettings("http://127.0.0.1:5030", apiKey);
   onStep("✓ Connected — you're all set!");
 
   return apiKey;

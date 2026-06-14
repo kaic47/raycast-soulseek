@@ -67,7 +67,7 @@ async function getConfig(): Promise<{ url: string; apiKey: string }> {
   const storedKey = await LocalStorage.getItem<string>("slskd_api_key");
   const storedUrl = await LocalStorage.getItem<string>("slskd_url");
   return {
-    url: storedUrl || prefs.slskdUrl || "http://localhost:5030",
+    url: storedUrl || prefs.slskdUrl || "http://127.0.0.1:5030",
     apiKey: storedKey || prefs.apiKey || "",
   };
 }
