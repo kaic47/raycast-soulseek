@@ -1,6 +1,7 @@
 import { exec } from "child_process";
 import { randomBytes } from "crypto";
-import { mkdir, writeFile } from "fs/promises";
+import { existsSync } from "fs";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import { useEffect, useRef, useState } from "react";
@@ -57,42 +58,48 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
     // connection refused = nothing on 5030, safe to proceed
   }
 
-  // Step 1: detect arch
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
-  onStep(`✓ Architecture detected: ${arch}`);
+  // Steps 1–5 (download/extract) are skipped if slskd is already installed —
+  // no point re-downloading ~100 MB; we just reconfigure and (re)start it.
+  if (existsSync(binary)) {
+    onStep("✓ slskd already installed — skipping download");
+  } else {
+    // Step 1: detect arch
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    onStep(`✓ Architecture detected: ${arch}`);
 
-  // Step 2: fetch latest version
-  onStep("⏳ Fetching latest slskd version…");
-  const versionRes = await fetch("https://api.github.com/repos/slskd/slskd/releases/latest");
-  if (!versionRes.ok) throw new Error("Could not fetch slskd release info from GitHub");
-  const versionData = (await versionRes.json()) as { tag_name: string };
-  const version = versionData.tag_name;
-  // Guard against a malicious/garbled tag injecting shell metacharacters,
-  // since `version` is interpolated into a curl command below.
-  if (!/^[\w.-]+$/.test(version)) {
-    throw new Error(`Unexpected slskd version tag from GitHub: ${version}`);
+    // Step 2: fetch latest version
+    onStep("⏳ Fetching latest slskd version…");
+    const versionRes = await fetch("https://api.github.com/repos/slskd/slskd/releases/latest");
+    if (!versionRes.ok) throw new Error("Could not fetch slskd release info from GitHub");
+    const versionData = (await versionRes.json()) as { tag_name: string };
+    const version = versionData.tag_name;
+    // Guard against a malicious/garbled tag injecting shell metacharacters,
+    // since `version` is interpolated into a curl command below.
+    if (!/^[\w.-]+$/.test(version)) {
+      throw new Error(`Unexpected slskd version tag from GitHub: ${version}`);
+    }
+    onStep(`✓ Latest version: ${version}`);
+
+    // Step 3: download
+    const zipUrl = `https://github.com/slskd/slskd/releases/download/${version}/slskd-${version}-osx-${arch}.zip`;
+    const zipPath = join("/tmp", `slskd-${version}-osx-${arch}.zip`);
+    onStep("⏳ Downloading slskd (~100 MB, this may take a minute)…");
+    await execAsync(`curl -fsSL ${JSON.stringify(zipUrl)} -o ${JSON.stringify(zipPath)}`);
+    onStep("✓ Download complete");
+
+    // Step 4: extract
+    onStep("⏳ Extracting binary…");
+    await mkdir(installDir, { recursive: true });
+    await execAsync(`unzip -o ${JSON.stringify(zipPath)} -d ${JSON.stringify(installDir)}`);
+    onStep("✓ Binary extracted");
+
+    // Step 5: permissions + quarantine
+    await execAsync(`chmod +x ${JSON.stringify(binary)}`);
+    await execAsync(`xattr -d com.apple.quarantine ${JSON.stringify(binary)}`).catch(() => {
+      // quarantine attribute may not exist if already cleared
+    });
+    onStep("✓ Permissions set");
   }
-  onStep(`✓ Latest version: ${version}`);
-
-  // Step 3: download
-  const zipUrl = `https://github.com/slskd/slskd/releases/download/${version}/slskd-${version}-osx-${arch}.zip`;
-  const zipPath = join("/tmp", `slskd-${version}-osx-${arch}.zip`);
-  onStep("⏳ Downloading slskd (~100 MB, this may take a minute)…");
-  await execAsync(`curl -fsSL ${JSON.stringify(zipUrl)} -o ${JSON.stringify(zipPath)}`);
-  onStep("✓ Download complete");
-
-  // Step 4: extract
-  onStep("⏳ Extracting binary…");
-  await mkdir(installDir, { recursive: true });
-  await execAsync(`unzip -o ${JSON.stringify(zipPath)} -d ${JSON.stringify(installDir)}`);
-  onStep("✓ Binary extracted");
-
-  // Step 5: permissions + quarantine
-  await execAsync(`chmod +x ${JSON.stringify(binary)}`);
-  await execAsync(`xattr -d com.apple.quarantine ${JSON.stringify(binary)}`).catch(() => {
-    // quarantine attribute may not exist if already cleared
-  });
-  onStep("✓ Permissions set");
 
   // Step 6: generate API key
   const apiKey = randomBytes(16).toString("hex");
@@ -177,6 +184,38 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
   return apiKey;
 }
 
+// True if this extension has already installed the slskd binary on disk.
+function isSlskdInstalled(): boolean {
+  return existsSync(join(homedir(), ".local", "share", "slskd", "slskd"));
+}
+
+// Reconnect to an already-installed slskd without re-downloading: read the API
+// key straight from its config, make sure the background service is running,
+// and save the key so the extension authenticates. Returns true if connected.
+async function reconnectExisting(): Promise<boolean> {
+  const configFile = join(homedir(), ".config", "slskd", "slskd.yml");
+  const plistFile = join(homedir(), "Library", "LaunchAgents", "com.slskd.slskd.plist");
+  if (!existsSync(configFile)) return false;
+
+  const yaml = await readFile(configFile, "utf-8");
+  const match = yaml.match(/key:\s*"?([^"\s]+)"?/);
+  if (!match) return false;
+  const apiKey = match[1];
+
+  // Make sure the service is loaded/running (no-op if it already is).
+  if (existsSync(plistFile)) {
+    await execAsync(`launchctl load -w ${JSON.stringify(plistFile)}`).catch(() => {});
+  }
+
+  await saveConnectionSettings("http://127.0.0.1:5030", apiKey);
+
+  for (let i = 0; i < 5; i++) {
+    if (await checkConnection()) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return checkConnection();
+}
+
 // ─── Sub-screens ───────────────────────────────────────────────────────────
 
 function CheckingScreen() {
@@ -203,10 +242,26 @@ function ConnectedScreen({ onReconfigure }: { onReconfigure: () => void }) {
   );
 }
 
-function NotConnectedScreen({ onInstall }: { onInstall: () => void }) {
-  return (
-    <Detail
-      markdown={`# Soulseek Setup
+function NotConnectedScreen({
+  onInstall,
+  onReconnect,
+  installed,
+}: {
+  onInstall: () => void;
+  onReconnect: () => void;
+  installed: boolean;
+}) {
+  const markdown = installed
+    ? `# Soulseek Setup
+
+slskd is **already installed** on this Mac but the extension isn't connected to it right now.
+
+Click **Use Existing Installation** to start it and reconnect — no re-download needed.
+
+---
+
+_Or choose **Reinstall slskd** to set it up fresh with new credentials._`
+    : `# Soulseek Setup
 
 This extension uses **slskd** — a lightweight background app that connects to the Soulseek network.
 
@@ -218,10 +273,19 @@ Click **Install slskd** below to automatically:
 ---
 
 **Don't have a Soulseek account?**
-Create one free at [soulseek.org](https://www.soulseek.org) before continuing.`}
+Create one free at [soulseek.org](https://www.soulseek.org) before continuing.`;
+
+  return (
+    <Detail
+      markdown={markdown}
       actions={
         <ActionPanel>
-          <Action title="Install slskd" icon={Icon.Download} onAction={onInstall} />
+          {installed && <Action title="Use Existing Installation" icon={Icon.Plug} onAction={onReconnect} />}
+          <Action
+            title={installed ? "Reinstall slskd" : "Install slskd"}
+            icon={Icon.Download}
+            onAction={onInstall}
+          />
           <Action.OpenInBrowser title="Create Soulseek Account" url="https://www.soulseek.org" />
         </ActionPanel>
       }
@@ -295,22 +359,31 @@ function InstallingScreen({ steps, error, onRetry }: InstallingScreenProps) {
 
 interface WrongKeyScreenProps {
   onSubmit: (apiKey: string) => void;
+  onAutoReconnect: () => void;
+  installed: boolean;
 }
 
-function WrongKeyScreen({ onSubmit }: WrongKeyScreenProps) {
+function WrongKeyScreen({ onSubmit, onAutoReconnect, installed }: WrongKeyScreenProps) {
   return (
     <Form
       actions={
         <ActionPanel>
+          {installed && <Action title="Auto-Reconnect" icon={Icon.Plug} onAction={onAutoReconnect} />}
           <Action.SubmitForm
             title="Connect"
-            icon={Icon.Plug}
+            icon={Icon.Key}
             onSubmit={(values: { apiKey: string }) => onSubmit(values.apiKey)}
           />
         </ActionPanel>
       }
     >
-      <Form.Description text="slskd is already running but the API key doesn't match. Enter the key from your slskd config (web.authentication.api_keys in slskd.yml)." />
+      <Form.Description
+        text={
+          installed
+            ? "slskd is running but the extension's saved key is out of date. Use Auto-Reconnect to fix it automatically, or paste the key from slskd.yml below."
+            : "slskd is already running but the API key doesn't match. Enter the key from your slskd config (web.authentication.api_keys in slskd.yml)."
+        }
+      />
       <Form.PasswordField id="apiKey" title="API Key" placeholder="paste your slskd API key here" />
     </Form>
   );
@@ -341,6 +414,7 @@ export default function SetupCommand() {
   const [steps, setSteps] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<InstallConfig | null>(null);
+  const installed = isSlskdInstalled();
 
   useEffect(() => {
     getConnectionStatus().then((status) => {
@@ -380,6 +454,17 @@ export default function SetupCommand() {
     setScreen("not_connected");
   };
 
+  const handleReconnect = async () => {
+    setScreen("checking");
+    const ok = await reconnectExisting();
+    if (ok) {
+      setScreen("done");
+    } else {
+      setError("Couldn't reconnect to the existing slskd. Try reinstalling, or paste the API key manually.");
+      setScreen("error");
+    }
+  };
+
   const handleApiKeySubmit = async (apiKey: string) => {
     await saveConnectionSettings("http://127.0.0.1:5030", apiKey);
     const ok = await checkConnection();
@@ -404,9 +489,11 @@ export default function SetupCommand() {
     case "connected":
       return <ConnectedScreen onReconfigure={handleReconfigure} />;
     case "wrong_key":
-      return <WrongKeyScreen onSubmit={handleApiKeySubmit} />;
+      return <WrongKeyScreen onSubmit={handleApiKeySubmit} onAutoReconnect={handleReconnect} installed={installed} />;
     case "not_connected":
-      return <NotConnectedScreen onInstall={() => setScreen("configure")} />;
+      return (
+        <NotConnectedScreen onInstall={() => setScreen("configure")} onReconnect={handleReconnect} installed={installed} />
+      );
     case "configure":
       return <ConfigureForm onSubmit={handleSubmit} />;
     case "installing":
