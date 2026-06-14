@@ -67,6 +67,11 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
   if (!versionRes.ok) throw new Error("Could not fetch slskd release info from GitHub");
   const versionData = (await versionRes.json()) as { tag_name: string };
   const version = versionData.tag_name;
+  // Guard against a malicious/garbled tag injecting shell metacharacters,
+  // since `version` is interpolated into a curl command below.
+  if (!/^[\w.-]+$/.test(version)) {
+    throw new Error(`Unexpected slskd version tag from GitHub: ${version}`);
+  }
   onStep(`✓ Latest version: ${version}`);
 
   // Step 3: download
@@ -112,7 +117,8 @@ async function runInstall(config: InstallConfig, onStep: (msg: string) => void):
     '        cidr: "127.0.0.1/32"',
   ].join("\n");
 
-  await writeFile(configFile, yaml + "\n", "utf-8");
+  // mode 0600: the file holds the Soulseek password + API key — owner-only
+  await writeFile(configFile, yaml + "\n", { encoding: "utf-8", mode: 0o600 });
   onStep("✓ Configuration written");
 
   // Step 8: create LaunchAgent
